@@ -15,6 +15,7 @@ from pyrogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 from pymongo import MongoClient
 import shutil
 from config import CHANNEL, DATABASE
+
 #please give credits https://github.com/MN-BOTS
 #  @MrMNTG @MusammilN
 
@@ -120,9 +121,98 @@ def get_file_info(share_url: str) -> dict:
         "name": file.get("server_filename", "download"),
         "download_link": file.get("dlink", ""),
         "size_bytes": size_bytes,
-        "size_str": get_size(size_bytes)
+        "size_str": get_size(size_bytes),
+        "category": file.get("category", 0)  # 1: video, 2: audio, 3: image, 4: doc
     }
 
+async def send_appropriate_media(client, message: Message, file_path: str, file_info: dict, url: str):
+    caption = (
+        f"File Name: {file_info['name']}\n"
+        f"File Size: {file_info['size_str']}\n"
+        f"Link: {url}"
+    )
+    
+    # Check file extension first as primary method
+    file_ext = os.path.splitext(file_info['name'])[1].lower()
+    
+    # If category is available, use that as secondary method
+    category = file_info.get('category', 0)
+    
+    try:
+        if file_ext in ('.mp4', '.mkv', '.mov', '.avi', '.webm') or category == 1:
+            # Send as video
+            if CHANNEL.ID:
+                await client.send_video(
+                    chat_id=CHANNEL.ID,
+                    video=file_path,
+                    caption=caption
+                )
+            return await client.send_video(
+                chat_id=message.chat.id,
+                video=file_path,
+                caption=caption,
+                protect_content=True
+            )
+        elif file_ext in ('.mp3', '.m4a', '.flac', '.wav', '.ogg') or category == 2:
+            # Send as audio
+            if CHANNEL.ID:
+                await client.send_audio(
+                    chat_id=CHANNEL.ID,
+                    audio=file_path,
+                    caption=caption
+                )
+            return await client.send_audio(
+                chat_id=message.chat.id,
+                audio=file_path,
+                caption=caption,
+                protect_content=True
+            )
+        elif file_ext in ('.jpg', '.jpeg', '.png', '.webp', '.gif') or category == 3:
+            # Send as photo
+            if CHANNEL.ID:
+                await client.send_photo(
+                    chat_id=CHANNEL.ID,
+                    photo=file_path,
+                    caption=caption
+                )
+            return await client.send_photo(
+                chat_id=message.chat.id,
+                photo=file_path,
+                caption=caption,
+                protect_content=True
+            )
+        else:
+            # Fallback to document
+            if CHANNEL.ID:
+                await client.send_document(
+                    chat_id=CHANNEL.ID,
+                    document=file_path,
+                    caption=caption,
+                    file_name=file_info['name']
+                )
+            return await client.send_document(
+                chat_id=message.chat.id,
+                document=file_path,
+                caption=caption,
+                file_name=file_info['name'],
+                protect_content=True
+            )
+    except Exception as e:
+        # If media send fails, try as document
+        if CHANNEL.ID:
+            await client.send_document(
+                chat_id=CHANNEL.ID,
+                document=file_path,
+                caption=caption,
+                file_name=file_info['name']
+            )
+        return await client.send_document(
+            chat_id=message.chat.id,
+            document=file_path,
+            caption=caption,
+            file_name=file_info['name'],
+            protect_content=True
+        )
 
 @Client.on_message(filters.private & filters.regex(TERABOX_REGEX))
 async def handle_terabox(client, message: Message):
@@ -158,28 +248,8 @@ async def handle_terabox(client, message: Message):
             with open(temp_path, "wb") as f:
                 shutil.copyfileobj(r.raw, f)
 
-        caption = (
-            f"File Name: {info['name']}\n"
-            f"File Size: {info['size_str']}\n"
-            f"Link: {url}"
-        )
-
-        if CHANNEL.ID:
-            await client.send_document(
-                chat_id=CHANNEL.ID,
-                document=temp_path,
-                caption=caption,
-                file_name=info["name"]
-            )
-
-        sent_msg = await client.send_document(
-            chat_id=message.chat.id,
-            document=temp_path,
-            caption=caption,
-            file_name=info["name"],
-            protect_content=True
-        )
-
+        sent_msg = await send_appropriate_media(client, message, temp_path, info, url)
+        
         await message.reply("✅ File will be deleted from your chat after 12 hours.")
         await asyncio.sleep(43200)
         try:
