@@ -5,87 +5,25 @@ import re
 import tempfile
 import requests
 import asyncio
-from datetime import datetime, timedelta
 from urllib.parse import urlencode, urlparse, parse_qs
-from pyrogram import Client 
-from pyrogram import filters
+from pyrogram import Client, filters
 from pyrogram.types import Message
-from verify_patch import IS_VERIFY, is_verified, build_verification_link, HOW_TO_VERIFY
-from pyrogram.types import InlineKeyboardMarkup, InlineKeyboardButton
-from pymongo import MongoClient
-import shutil
-from config import CHANNEL, DATABASE
-
-#please give credits https://github.com/MN-BOTS
-#  @MrMNTG @MusammilN
-
-mongo_client = MongoClient(DATABASE.URI)
-db = mongo_client[DATABASE.NAME]
-
-settings_col = db["terabox_settings"]
-queue_col = db["terabox_queue"]
-last_upload_col = db["terabox_lastupload"]
 
 TERABOX_REGEX = r'https?://(?:www\.)?[^/\s]*tera[^/\s]*\.[a-z]+/s/[^\s]+'
 
-COOKIE = "ndus=YzrYlCHteHuixx7IN5r0fc3sajSOYAHfqDoPM0dP" # add your own cookies like ndus=YzrYlCHteHuixx7IN5r0ABCDFXDGSTGBDJKLBKMKH
+COOKIE = "ndus=YzrYlCHteHuixx7IN5r0fc3sajSOYAHfqDoPM0dP"
 
 HEADERS = {
-    "Accept": "application/json, text/plain, */*",
-    "Accept-Encoding": "gzip, deflate, br",
-    "Accept-Language": "en-US,en;q=0.9,hi;q=0.8",
-    "Connection": "keep-alive",
-    "DNT": "1",
-    "Host": "www.terabox.app",
-    "Upgrade-Insecure-Requests": "1",
-    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-                  "AppleWebKit/537.36 (KHTML, like Gecko) "
-                  "Chrome/135.0.0.0 Safari/537.36 Edg/135.0.0.0",
-    "sec-ch-ua": '"Microsoft Edge";v="135", "Not-A.Brand";v="8", "Chromium";v="135"',
-    "Sec-Fetch-Dest": "document",
-    "Sec-Fetch-Mode": "navigate",
-    "Sec-Fetch-Site": "none",
-    "Sec-Fetch-User": "?1",
-    "Cookie": COOKIE,
-    "sec-ch-ua-mobile": "?0",
-    "sec-ch-ua-platform": '"Windows"',
-}
-
-DL_HEADERS = {
-    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-                  "AppleWebKit/537.36 (KHTML, like Gecko) "
-                  "Chrome/91.0.4472.124 Safari/537.36",
-    "Accept": "text/html,application/xhtml+xml,application/xml;"
-              "q=0.9,image/webp,*/*;q=0.8",
-    "Accept-Language": "en-US,en;q=0.5",
-    "Referer": "https://www.terabox.com/",
-    "DNT": "1",
-    "Connection": "keep-alive",
-    "Upgrade-Insecure-Requests": "1",
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36",
     "Cookie": COOKIE,
 }
-
-def get_size(bytes_len: int) -> str:
-    if bytes_len >= 1024 ** 3:
-        return f"{bytes_len / 1024**3:.2f} GB"
-    if bytes_len >= 1024 ** 2:
-        return f"{bytes_len / 1024**2:.2f} MB"
-    if bytes_len >= 1024:
-        return f"{bytes_len / 1024:.2f} KB"
-    return f"{bytes_len} bytes"
-
-def find_between(text: str, start: str, end: str) -> str:
-    try:
-        return text.split(start, 1)[1].split(end, 1)[0]
-    except Exception:
-        return ""
 
 def get_file_info(share_url: str) -> dict:
     resp = requests.get(share_url, headers=HEADERS, allow_redirects=True)
     if resp.status_code != 200:
         raise ValueError(f"Failed to fetch share page ({resp.status_code})")
+    
     final_url = resp.url
-
     parsed = urlparse(final_url)
     surl = parse_qs(parsed.query).get("surl", [None])[0]
     if not surl:
@@ -94,171 +32,81 @@ def get_file_info(share_url: str) -> dict:
     page = requests.get(final_url, headers=HEADERS)
     html = page.text
 
-    js_token = find_between(html, 'fn%28%22', '%22%29')
-    logid = find_between(html, 'dp-logid=', '&')
-    bdstoken = find_between(html, 'bdstoken":"', '"')
+    js_token = re.search(r'fn%28%22(.*?)%22%29', html)
+    logid = re.search(r'dp-logid=([^&]*)', html)
+    bdstoken = re.search(r'bdstoken":"(.*?)"', html)
+    
     if not all([js_token, logid, bdstoken]):
         raise ValueError("Failed to extract authentication tokens")
 
     params = {
         "app_id": "250528", "web": "1", "channel": "dubox",
-        "clienttype": "0", "jsToken": js_token, "dp-logid": logid,
-        "page": "1", "num": "20", "by": "name", "order": "asc",
-        "site_referer": final_url, "shorturl": surl, "root": "1,",
+        "clienttype": "0", "jsToken": js_token.group(1), 
+        "dp-logid": logid.group(1), "page": "1", "num": "20", 
+        "by": "name", "order": "asc", "site_referer": final_url, 
+        "shorturl": surl, "root": "1,",
     }
+    
     info = requests.get(
         "https://www.terabox.app/share/list?" + urlencode(params),
         headers=HEADERS
     ).json()
 
     if info.get("errno") or not info.get("list"):
-        errmsg = info.get("errmsg", "Unknown error")
-        raise ValueError(f"List API error: {errmsg}")
+        raise ValueError(info.get("errmsg", "Unknown error"))
 
     file = info["list"][0]
-    size_bytes = int(file.get("size", 0))
     return {
         "name": file.get("server_filename", "download"),
         "download_link": file.get("dlink", ""),
-        "size_bytes": size_bytes,
-        "size_str": get_size(size_bytes),
-        "category": file.get("category", 0)  # 1: video, 2: audio, 3: image, 4: doc
+        "category": file.get("category", 0)  # 1: video
     }
 
-async def send_appropriate_media(client, message: Message, file_path: str, file_info: dict, url: str):
-    caption = (
-        f"File Name: {file_info['name']}\n"
-        f"File Size: {file_info['size_str']}\n"
-        f"Link: {url}"
-    )
-    
-    # Check file extension first as primary method
+async def send_to_channel(client: Client, file_path: str, file_info: dict):
     file_ext = os.path.splitext(file_info['name'])[1].lower()
     
-    # If category is available, use that as secondary method
-    category = file_info.get('category', 0)
-    
-    try:
-        if file_ext in ('.mp4', '.mkv', '.mov', '.avi', '.webm') or category == 1:
-            # Send as video
-            if CHANNEL.ID:
-                await client.send_video(
-                    chat_id=CHANNEL.ID,
-                    video=file_path,
-                    caption=caption
-                )
-            return await client.send_video(
-                chat_id=message.chat.id,
-                video=file_path,
-                caption=caption,
-                protect_content=True
-            )
-        elif file_ext in ('.mp3', '.m4a', '.flac', '.wav', '.ogg') or category == 2:
-            # Send as audio
-            if CHANNEL.ID:
-                await client.send_audio(
-                    chat_id=CHANNEL.ID,
-                    audio=file_path,
-                    caption=caption
-                )
-            return await client.send_audio(
-                chat_id=message.chat.id,
-                audio=file_path,
-                caption=caption,
-                protect_content=True
-            )
-        elif file_ext in ('.jpg', '.jpeg', '.png', '.webp', '.gif') or category == 3:
-            # Send as photo
-            if CHANNEL.ID:
-                await client.send_photo(
-                    chat_id=CHANNEL.ID,
-                    photo=file_path,
-                    caption=caption
-                )
-            return await client.send_photo(
-                chat_id=message.chat.id,
-                photo=file_path,
-                caption=caption,
-                protect_content=True
-            )
-        else:
-            # Fallback to document
-            if CHANNEL.ID:
-                await client.send_document(
-                    chat_id=CHANNEL.ID,
-                    document=file_path,
-                    caption=caption,
-                    file_name=file_info['name']
-                )
-            return await client.send_document(
-                chat_id=message.chat.id,
-                document=file_path,
-                caption=caption,
-                file_name=file_info['name'],
-                protect_content=True
-            )
-    except Exception as e:
-        # If media send fails, try as document
-        if CHANNEL.ID:
-            await client.send_document(
-                chat_id=CHANNEL.ID,
-                document=file_path,
-                caption=caption,
-                file_name=file_info['name']
-            )
-        return await client.send_document(
-            chat_id=message.chat.id,
-            document=file_path,
-            caption=caption,
-            file_name=file_info['name'],
-            protect_content=True
+    if file_ext in ('.mp4', '.mkv', '.mov', '.avi') or file_info['category'] == 1:
+        return await client.send_video(
+            chat_id=CHANNEL.ID,
+            video=file_path,
+            caption=f"File Name: {file_info['name']}"
         )
+    return await client.send_document(
+        chat_id=CHANNEL.ID,
+        document=file_path,
+        caption=f"File Name: {file_info['name']}"
+    )
 
 @Client.on_message(filters.private & filters.regex(TERABOX_REGEX))
-async def handle_terabox(client, message: Message):
-    user_id = message.from_user.id
-
-    if IS_VERIFY and not await is_verified(user_id):
-        verify_url = await build_verification_link(client.me.username, user_id)
-        buttons = [
-            [
-                InlineKeyboardButton("✅ Verify Now", url=verify_url),
-                InlineKeyboardButton("📖 Tutorial", url=HOW_TO_VERIFY)
-            ]
-        ]
-        await message.reply_text(
-            "🔐 You must verify before using this command.\n\n⏳ Verification lasts for 12 hours.",
-            reply_markup=InlineKeyboardMarkup(buttons)
-        )
-        return
-
+async def handle_terabox(client: Client, message: Message):
     url = message.text.strip()
+    
     try:
         info = get_file_info(url)
-    except Exception as e:
-        return await message.reply(f"❌ Failed to get file info:\n{e}")
-
-    temp_path = os.path.join(tempfile.gettempdir(), info["name"])
-
-    await message.reply("📥 Downloading...")
-
-    try:
-        with requests.get(info["download_link"], headers=DL_HEADERS, stream=True) as r:
+        temp_path = os.path.join(tempfile.gettempdir(), info["name"])
+        
+        await message.reply("📥 Downloading...")
+        
+        with requests.get(info["download_link"], headers=HEADERS, stream=True) as r:
             r.raise_for_status()
             with open(temp_path, "wb") as f:
                 shutil.copyfileobj(r.raw, f)
-
-        sent_msg = await send_appropriate_media(client, message, temp_path, info, url)
         
-        await message.reply("✅ File will be deleted from your chat after 12 hours.")
-        await asyncio.sleep(43200)
-        try:
-            await sent_msg.delete()
-        except Exception:
-            pass
-
+        # Send to channel as video if possible, otherwise as document
+        await send_to_channel(client, temp_path, info)
+        
+        # Send to user as document (original behavior)
+        await client.send_document(
+            chat_id=message.chat.id,
+            document=temp_path,
+            caption=f"File Name: {info['name']}",
+            protect_content=True
+        )
+        
+        await message.reply("✅ File sent successfully!")
+        
     except Exception as e:
-        await message.reply(f"❌ Upload failed:\n`{e}`")
+        await message.reply(f"❌ Error: {str(e)}")
     finally:
         if os.path.exists(temp_path):
             os.remove(temp_path)
